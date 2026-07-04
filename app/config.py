@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     whatsapp_phone_number_id: str  # ID тестового/боевого номера в Meta for Developers
     whatsapp_verify_token: str  # строка, которую ты сам придумываешь для верификации вебхука
 
+    # --- Groq API ---
+    groq_api_key: str  # ключ из console.groq.com
+    groq_model: str = "llama-3.1-8b-instant"  # быстрая модель для диалога
+
     # --- Graph API base URL (редко меняется, но пусть будет настраиваемым) ---
     whatsapp_api_version: str = "v21.0"
 
