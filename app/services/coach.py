@@ -1,23 +1,20 @@
 """
 Сервис языкового коуча.
 
-Отвечает за:
-1. Формирование системного промпта (кто такой коуч, как он общается)
-2. Сборку сообщений для Groq (системный промпт + история + новое сообщение)
-3. Вызов Groq API и возврат ответа
+На Этапе 2 история диалога читается из PostgreSQL через memory.py
 """
 
 import logging
 
 from groq import AsyncGroq
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.services import memory
+from app.services.user_service import get_or_create_user
 
 logger = logging.getLogger("coach")
 
-# Инициализируем клиент один раз при старте приложения.
-# AsyncGroq — асинхронный клиент, совместим с FastAPI.
 _groq_client = AsyncGroq(api_key=settings.groq_api_key)
 
 SYSTEM_PROMPT = """You are Alex, a friendly and encouraging English language coach for beginners (A1-A2 level).
@@ -46,45 +43,43 @@ YOUR ROLE:
 IMPORTANT: Keep every response under 100 words. WhatsApp conversations should feel natural, not like a textbook."""
 
 
-async def get_coach_response(phone: str, user_message: str) -> str:
+async def get_coach_response(
+    session: AsyncSession, phone: str, user_message: str
+) -> str:
     """
-    Основная функция: принимает номер телефона и сообщение пользователя,
-    возвращает ответ коуча.
-
-    Процесс:
-    1. Добавляем сообщение пользователя в историю
-    2. Формируем запрос к Groq (системный промпт + история)
-    3. Получаем ответ
-    4. Добавляем ответ в историю
-    5. Возвращаем текст ответа
+    Принимает сессию БД, номер телефона и сообщение пользователя.
+    Возвращает ответ коуча, сохраняя оба сообщения в БД.
     """
-    # Добавляем сообщение пользователя в историю
-    memory.add_message(phone, "user", user_message)
+    # Убеждаемся что ученик существует в БД
+    await get_or_create_user(session, phone)
 
-    # Формируем список сообщений для Groq:
-    # системный промпт идёт первым, затем вся история диалога
+    # Сохраняем сообщение пользователя
+    await memory.add_message(session, phone, "user", user_message)
+
+    # Загружаем историю из БД
+    history = await memory.get_history(session, phone)
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        *memory.get_history(phone),
+        *history,
     ]
 
     try:
         response = await _groq_client.chat.completions.create(
             model=settings.groq_model,
             messages=messages,
-            max_tokens=200,   # Коротко — это WhatsApp, не эссе
-            temperature=0.7,  # Немного творчества, но не слишком случайно
+            max_tokens=200,
+            temperature=0.7,
         )
 
         assistant_message = response.choices[0].message.content
 
-        # Сохраняем ответ коуча в историю
-        memory.add_message(phone, "assistant", assistant_message)
+        # Сохраняем ответ коуча в БД
+        await memory.add_message(session, phone, "assistant", assistant_message)
 
         logger.info("Coach responded to %s: %s chars", phone, len(assistant_message))
         return assistant_message
 
     except Exception as exc:
         logger.error("Groq API error for %s: %s", phone, exc)
-        # Возвращаем дружелюбное сообщение об ошибке вместо падения
         return "Sorry, I'm having a little trouble right now. Please try again in a moment! 🙏"

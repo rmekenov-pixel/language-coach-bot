@@ -1,44 +1,57 @@
 """
-Простое хранение истории диалога в памяти процесса.
+Хранение истории диалога в PostgreSQL.
 
-На Этапе 1 история живёт пока жив процесс — при перезапуске сервера
-сбрасывается. Это осознанное упрощение: персистентность (PostgreSQL)
-добавим на Этапе 2.
-
-Ключ словаря — номер телефона пользователя (строка, например "77022300157").
-Значение — список сообщений в формате OpenAI/Groq:
-  [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+На Этапе 2 история сохраняется в БД и переживает перезапуски сервера.
+Максимум MAX_HISTORY последних сообщений загружается для каждого запроса к LLM.
 """
 
-from collections import defaultdict
+import logging
 
-# Максимальное количество сообщений в истории на одного пользователя.
-# Чем длиннее история — тем больше токенов тратится на каждый запрос.
-# 20 сообщений (10 пар вопрос-ответ) — разумный баланс для A1-A2 ученика.
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models import Message
+
+logger = logging.getLogger("memory")
+
+# Сколько последних сообщений передаём в Groq.
+# Чем больше — тем лучше контекст, но дороже по токенам.
 MAX_HISTORY = 20
 
-# Глобальный словарь: phone_number -> list of messages
-_conversations: dict[str, list[dict]] = defaultdict(list)
 
-
-def get_history(phone: str) -> list[dict]:
-    """Возвращает историю диалога для пользователя."""
-    return _conversations[phone]
-
-
-def add_message(phone: str, role: str, content: str) -> None:
+async def get_history(session: AsyncSession, phone: str) -> list[dict]:
     """
-    Добавляет сообщение в историю и обрезает её если она превышает MAX_HISTORY.
-    role: "user" или "assistant"
+    Загружает последние MAX_HISTORY сообщений из БД.
+    Возвращает в формате Groq/OpenAI: [{"role": "user", "content": "..."}]
     """
-    _conversations[phone].append({"role": role, "content": content})
+    result = await session.execute(
+        select(Message)
+        .where(Message.phone == phone)
+        .order_by(Message.created_at.desc())
+        .limit(MAX_HISTORY)
+    )
+    messages = result.scalars().all()
 
-    # Если история стала слишком длинной — удаляем старые сообщения с начала.
-    # Важно: удаляем парами (user + assistant), чтобы не нарушить чередование ролей.
-    while len(_conversations[phone]) > MAX_HISTORY:
-        _conversations[phone].pop(0)
+    # Разворачиваем — в БД последние сверху, нам нужно хронологически
+    return [
+        {"role": msg.role, "content": msg.content}
+        for msg in reversed(messages)
+    ]
 
 
-def clear_history(phone: str) -> None:
-    """Сбрасывает историю диалога для пользователя (например, по команде /reset)."""
-    _conversations[phone] = []
+async def add_message(
+    session: AsyncSession, phone: str, role: str, content: str
+) -> None:
+    """Сохраняет новое сообщение в БД."""
+    message = Message(phone=phone, role=role, content=content)
+    session.add(message)
+    await session.commit()
+    logger.debug("Saved message for %s (role=%s)", phone, role)
+
+
+async def clear_history(session: AsyncSession, phone: str) -> None:
+    """Удаляет всю историю диалога для ученика (команда /reset)."""
+    from sqlalchemy import delete
+    await session.execute(delete(Message).where(Message.phone == phone))
+    await session.commit()
+    logger.info("History cleared for %s", phone)
