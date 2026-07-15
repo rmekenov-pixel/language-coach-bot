@@ -1,8 +1,10 @@
 """
-Сервис языкового коуча.
+Сервис языкового коуча — Этап 4.
 
-На Этапе 3 коуч получает релевантные учебные материалы из БД
-и включает их в системный промпт для рекомендаций ученику.
+Новое:
+- Определяет тему сообщения и подбирает материалы по теме
+- После ответа проверяет нужно ли повысить уровень ученика
+- Поддерживает команду /progress
 """
 
 import logging
@@ -13,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.services import memory
 from app.services.content_service import format_materials_for_prompt, get_materials_for_student
+from app.services.progress_service import detect_topic, get_progress_summary, maybe_update_level
 from app.services.user_service import get_or_create_user
 
 logger = logging.getLogger("coach")
@@ -40,36 +43,44 @@ YOUR ROLE:
 - Have natural conversations on everyday topics (greetings, weather, food, hobbies, work)
 - Occasionally suggest a simple practice activity: "Can you tell me about your day in English?"
 - If the student seems stuck, offer help: "Would you like me to suggest some words?"
-- Remember: your goal is to make the student comfortable speaking English, not to lecture them
+- Your goal is to make the student comfortable speaking English, not to lecture them
 
-IMPORTANT: Keep every response under 100 words. WhatsApp conversations should feel natural, not like a textbook."""
+COMMANDS the student can use:
+- /reset — clear conversation history
+- /progress — see their learning progress
+
+IMPORTANT: Keep every response under 100 words. WhatsApp conversations should feel natural."""
 
 
 async def get_coach_response(
     session: AsyncSession, phone: str, user_message: str
 ) -> str:
     """
-    Принимает сессию БД, номер телефона и сообщение пользователя.
-    Возвращает ответ коуча, сохраняя оба сообщения в БД.
+    Основная функция коуча — Этап 4:
+    1. Определяем тему сообщения
+    2. Подбираем материалы по теме и уровню
+    3. Генерируем ответ
+    4. Проверяем нужно ли повысить уровень
     """
-    # Получаем или создаём профиль ученика
     user = await get_or_create_user(session, phone)
 
-    # Загружаем релевантные материалы для уровня ученика
+    # Определяем тему сообщения для подбора релевантных материалов
+    topic = await detect_topic(user_message)
+    logger.info("Detected topic for %s: %s", phone, topic)
+
+    # Загружаем материалы по теме и уровню
     materials = await get_materials_for_student(
-        session, level=user.level, limit=3
+        session, level=user.level, topic=topic, limit=3
     )
     materials_text = format_materials_for_prompt(materials)
 
-    # Собираем полный системный промпт
+    # Формируем системный промпт
     system_prompt = BASE_SYSTEM_PROMPT
     if materials_text:
         system_prompt += f"\n\n{materials_text}"
 
-    # Сохраняем сообщение пользователя
+    # Сохраняем сообщение и загружаем историю
     await memory.add_message(session, phone, "user", user_message)
-
-    # Загружаем историю из БД
     history = await memory.get_history(session, phone)
 
     messages = [
@@ -81,16 +92,19 @@ async def get_coach_response(
         response = await _groq_client.chat.completions.create(
             model=settings.groq_model,
             messages=messages,
-            max_tokens=250,   # чуть больше места для рекомендаций
+            max_tokens=250,
             temperature=0.7,
         )
 
         assistant_message = response.choices[0].message.content
-
-        # Сохраняем ответ коуча в БД
         await memory.add_message(session, phone, "assistant", assistant_message)
 
-        logger.info("Coach responded to %s: %s chars", phone, len(assistant_message))
+        # Проверяем нужно ли повысить уровень (каждые 10 сообщений)
+        level_up = await maybe_update_level(session, phone)
+        if level_up:
+            assistant_message += f"\n\n🎉 Congratulations! You've been promoted to level {user.level}! Keep it up!"
+
+        logger.info("Coach responded to %s (level=%s topic=%s)", phone, user.level, topic)
         return assistant_message
 
     except Exception as exc:

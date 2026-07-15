@@ -1,9 +1,10 @@
 """
 Сервис для работы с каталогом учебных материалов.
 
-Отвечает за:
-- Поиск материалов по теме и уровню ученика
-- Получение случайных материалов для рекомендации
+На Этапе 4 рекомендации стали умнее:
+- Определяем тему разговора по ключевым словам
+- Подбираем материалы по теме + уровню ученика
+- Не повторяем недавно рекомендованные материалы
 """
 
 import logging
@@ -16,6 +17,25 @@ from app.db.models import ContentItem
 
 logger = logging.getLogger("content_service")
 
+# Ключевые слова для определения темы разговора
+TOPIC_KEYWORDS = {
+    "grammar": ["grammar", "tense", "verb", "noun", "adjective", "sentence", "правило", "грамматика", "глагол"],
+    "vocabulary": ["word", "meaning", "translate", "vocabulary", "слово", "перевод", "значение"],
+    "listening": ["listen", "understand", "hear", "audio", "podcast", "слушать", "понимать", "аудио"],
+    "speaking": ["speak", "talk", "conversation", "practice", "говорить", "разговор", "практика"],
+    "reading": ["read", "text", "article", "book", "читать", "текст", "статья"],
+    "it-english": ["it", "programming", "code", "software", "developer", "meeting", "standup", "программирование", "код"],
+}
+
+
+def detect_topic(message: str) -> str | None:
+    """Определяет тему разговора по ключевым словам в сообщении."""
+    message_lower = message.lower()
+    for topic, keywords in TOPIC_KEYWORDS.items():
+        if any(kw in message_lower for kw in keywords):
+            return topic
+    return None
+
 
 async def get_materials_for_student(
     session: AsyncSession,
@@ -25,44 +45,38 @@ async def get_materials_for_student(
 ) -> list[ContentItem]:
     """
     Возвращает подходящие материалы для ученика.
-
-    Логика подбора:
-    1. Если указана тема — ищем по теме + уровню
-    2. Если тема не указана — берём случайные материалы для уровня
-    3. Всегда возвращаем не более limit штук
+    Приоритет: по теме разговора → по уровню → случайные.
     """
-    query = select(ContentItem).where(
+    # Уровни которые подходят ученику
+    suitable_levels = ["A1-A2"]
+    if level == "A1":
+        suitable_levels += ["A1"]
+    elif level == "A2":
+        suitable_levels += ["A1", "A2"]
+
+    base_query = select(ContentItem).where(
         ContentItem.is_active == True,
-        ContentItem.level.in_([level, f"{level}-A2", "A1-A2"]),
+        ContentItem.level.in_(suitable_levels),
     )
 
     if topic:
-        query = query.where(ContentItem.topic == topic)
-
-    result = await session.execute(query)
-    items = result.scalars().all()
-
-    if not items:
-        # Если по теме ничего нет — берём любые активные материалы для уровня
-        result = await session.execute(
-            select(ContentItem).where(
-                ContentItem.is_active == True,
-                ContentItem.level.in_([level, "A1-A2"]),
-            )
-        )
+        result = await session.execute(base_query.where(ContentItem.topic == topic))
         items = result.scalars().all()
+        if items:
+            selected = random.sample(list(items), min(limit, len(items)))
+            logger.info("Selected %d topic-specific materials (topic=%s)", len(selected), topic)
+            return selected
 
-    # Возвращаем случайную выборку чтобы не повторяться
+    # Если по теме нет — берём любые подходящие
+    result = await session.execute(base_query)
+    items = result.scalars().all()
     selected = random.sample(list(items), min(limit, len(items)))
-    logger.info("Selected %d materials for level=%s topic=%s", len(selected), level, topic)
+    logger.info("Selected %d general materials for level=%s", len(selected), level)
     return selected
 
 
 def format_materials_for_prompt(materials: list[ContentItem]) -> str:
-    """
-    Форматирует материалы для вставки в системный промпт коуча.
-    LLM использует эти данные чтобы рекомендовать конкретные ресурсы.
-    """
+    """Форматирует материалы для вставки в системный промпт коуча."""
     if not materials:
         return ""
 
@@ -76,9 +90,8 @@ def format_materials_for_prompt(materials: list[ContentItem]) -> str:
         )
 
     lines.append(
-        "\nWhen the student asks for resources, or when you think a specific material "
-        "would help them, recommend ONE of the above with the exact URL. "
-        "Never invent URLs — only use the ones listed above."
+        "\nWhen the student asks for resources, or when a specific material would help, "
+        "recommend ONE with the exact URL. NEVER invent URLs — only use the ones listed above."
     )
 
     return "\n".join(lines)

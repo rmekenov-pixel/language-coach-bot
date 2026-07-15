@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.database import get_session
 from app.services import coach, memory
+from app.services.progress_service import get_progress_summary
 
 logger = logging.getLogger("webhook")
 
@@ -33,21 +34,23 @@ async def receive_message(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, str]:
-    """
-    Получаем сообщение, передаём коучу (с сессией БД), отправляем ответ.
-    """
     payload = await request.json()
     logger.info("Incoming webhook payload: %s", payload)
 
     message_text, sender_number = _extract_message(payload)
 
     if message_text and sender_number:
-        if message_text.strip().lower() == "/reset":
+        cmd = message_text.strip().lower()
+
+        if cmd == "/reset":
             await memory.clear_history(session, sender_number)
             await _send_whatsapp_text(
                 to=sender_number,
                 body="History cleared! Let's start fresh. Hello! 👋 How are you today?"
             )
+        elif cmd == "/progress":
+            summary = await get_progress_summary(session, sender_number)
+            await _send_whatsapp_text(to=sender_number, body=summary)
         else:
             response_text = await coach.get_coach_response(
                 session, sender_number, message_text
