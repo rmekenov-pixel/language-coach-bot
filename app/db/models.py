@@ -70,3 +70,19 @@ class Message(Base):
 
     def __repr__(self) -> str:
         return f"<Message id={self.id} role={self.role} phone={self.phone}>"
+
+
+class ContentItem(Base):
+    __tablename__ = "content_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(Text)
+    url: Mapped[str] = mapped_column(Text)
+    type: Mapped[str] = mapped_column(String(20))       # website, video, podcast, course, exercise
+    level: Mapped[str] = mapped_column(String(10))      # A1, A2, A1-A2, B1
+    topic: Mapped[str] = mapped_column(String(50))      # grammar, vocabulary, listening, speaking, reading, it-english
+    description: Mapped[str] = mapped_column(Text)      # краткое описание для коуча
+    is_active: Mapped[bool] = mapped_column(default=True)
+
+    def __repr__(self) -> str:
+        return f"<ContentItem id={self.id} title={self.title[:30]} level={self.level}>"

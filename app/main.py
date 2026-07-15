@@ -8,12 +8,26 @@ from app.routers import webhook
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Lifespan — код который выполняется при старте и остановке приложения.
-    При старте: создаём таблицы в БД если их нет.
-    При остановке: ничего особенного не делаем.
+    При старте:
+    1. Создаём таблицы в БД если их нет
+    2. Заполняем content_items начальными данными если таблица пустая
     """
     from app.db.database import init_db
+    from app.db.database import AsyncSessionLocal
+    from app.db.models import ContentItem
+    from sqlalchemy import select
+
     await init_db()
+
+    # Автоматический сидинг контента при первом запуске
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(ContentItem).limit(1))
+        if result.scalar_one_or_none() is None:
+            import sys, os
+            sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+            from scripts.seed_content import seed
+            await seed()
+
     yield
 
 

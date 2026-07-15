@@ -1,7 +1,8 @@
 """
 Сервис языкового коуча.
 
-На Этапе 2 история диалога читается из PostgreSQL через memory.py
+На Этапе 3 коуч получает релевантные учебные материалы из БД
+и включает их в системный промпт для рекомендаций ученику.
 """
 
 import logging
@@ -11,13 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.services import memory
+from app.services.content_service import format_materials_for_prompt, get_materials_for_student
 from app.services.user_service import get_or_create_user
 
 logger = logging.getLogger("coach")
 
 _groq_client = AsyncGroq(api_key=settings.groq_api_key)
 
-SYSTEM_PROMPT = """You are Alex, a friendly and encouraging English language coach for beginners (A1-A2 level).
+BASE_SYSTEM_PROMPT = """You are Alex, a friendly and encouraging English language coach for beginners (A1-A2 level).
 
 Your student communicates with you via WhatsApp. They are learning English and may make grammar or vocabulary mistakes.
 
@@ -50,8 +52,19 @@ async def get_coach_response(
     Принимает сессию БД, номер телефона и сообщение пользователя.
     Возвращает ответ коуча, сохраняя оба сообщения в БД.
     """
-    # Убеждаемся что ученик существует в БД
-    await get_or_create_user(session, phone)
+    # Получаем или создаём профиль ученика
+    user = await get_or_create_user(session, phone)
+
+    # Загружаем релевантные материалы для уровня ученика
+    materials = await get_materials_for_student(
+        session, level=user.level, limit=3
+    )
+    materials_text = format_materials_for_prompt(materials)
+
+    # Собираем полный системный промпт
+    system_prompt = BASE_SYSTEM_PROMPT
+    if materials_text:
+        system_prompt += f"\n\n{materials_text}"
 
     # Сохраняем сообщение пользователя
     await memory.add_message(session, phone, "user", user_message)
@@ -60,7 +73,7 @@ async def get_coach_response(
     history = await memory.get_history(session, phone)
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         *history,
     ]
 
@@ -68,7 +81,7 @@ async def get_coach_response(
         response = await _groq_client.chat.completions.create(
             model=settings.groq_model,
             messages=messages,
-            max_tokens=200,
+            max_tokens=250,   # чуть больше места для рекомендаций
             temperature=0.7,
         )
 
