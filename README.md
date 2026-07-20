@@ -1,61 +1,88 @@
-# Language Coach Bot — Этап 0: WhatsApp ↔ FastAPI эхо
+# Language Coach Bot 🎓
 
-Цель этого этапа: убедиться, что связь Meta WhatsApp Cloud API → твой сервер → обратно в WhatsApp работает. Бот пока ничего не "думает" — просто повторяет полученное сообщение.
+AI-powered English language coach for WhatsApp. Built with FastAPI, PostgreSQL, Groq (Llama 3), and WhatsApp Cloud API.
 
-## Шаг 1. Meta for Developers
+## What It Does
 
-1. Зайди на https://developers.facebook.com/ → создай App (тип **Business**)
-2. В App добавь продукт **WhatsApp**
-3. В разделе **API Setup** найдёшь:
-   - тестовый номер (Test number) — уже готов, бесплатный
-   - **Temporary access token** — токен на 24 часа (потом заменим на постоянный)
-   - **Phone number ID** — это и есть `WHATSAPP_PHONE_NUMBER_ID`
-4. В разделе **API Setup** есть кнопка добавить номер получателя (твой личный WhatsApp) — добавь его и подтверди кодом, который придёт в WhatsApp. Без этого тестовый номер не сможет писать тебе.
+- 💬 **Conversational coaching** — natural dialogue in English at A1-A2 level
+- 🔧 **Error correction** — gently corrects grammar mistakes, one at a time
+- 📚 **Course recommendations** — suggests free learning resources from a curated catalog (23 materials: Stepik, BBC, Duolingo, British Council and more)
+- 📈 **Progress tracking** — evaluates student level every 10 messages, promotes A1 → A2 → B1
+- 🧠 **Persistent memory** — conversation history and student profile saved in PostgreSQL
+- 🎯 **Topic detection** — matches course recommendations to the topic of the conversation
 
-## Шаг 2. Деплой на Koyeb
+## Tech Stack
 
-Мы выбрали Koyeb вместо Railway для этого проекта: Railway-аккаунт уже занят MindCheck и его триальный кредит почти исчерпан, а Koyeb даёт бесплатный always-on контейнер (без sleep-режима) обычно без привязки карты — это важно, потому что вебхук должен отвечать мгновенно, а не "после пробуждения".
+| Layer | Technology |
+|---|---|
+| Backend | Python 3.13, FastAPI, uvicorn |
+| LLM | Groq API (llama-3.1-8b-instant) |
+| Database | PostgreSQL + SQLAlchemy async + asyncpg |
+| Messaging | WhatsApp Cloud API (Meta) |
+| Hosting | Railway |
 
-1. Зарегистрируйся на https://www.koyeb.com/ (через GitHub — проще всего)
-2. Создай новый **Service** → **GitHub** → выбери репозиторий с этим кодом
-   (репозиторий должен быть запушен на GitHub — если ты ещё не сделал `git init` / `git push`, скажи, и я подскажу команды)
-3. Koyeb сам определит Python-проект по `requirements.txt`. Параметры запуска:
-   - **Run command**: `uvicorn app.main:app --host 0.0.0.0 --port 8000`
-   - **Port**: `8000`
-4. В разделе **Environment variables** добавь три переменные:
-   - `WHATSAPP_TOKEN`
-   - `WHATSAPP_PHONE_NUMBER_ID`
-   - `WHATSAPP_VERIFY_TOKEN` — придумай любую секретную строку, например `coach_verify_2026`
-5. Деплой займёт пару минут. После деплоя Koyeb даст публичный URL вида `https://your-app-name.koyeb.app`
+## Commands
 
-Если по ходу регистрации Koyeb всё же попросит привязать карту для верификации — это нормально для некоторых регионов/типов аккаунтов, но списаний на free-тире не будет, пока не превысишь лимиты бесплатного плана.
+| Command | Description |
+|---|---|
+| `/reset` | Clear conversation history |
+| `/progress` | Show current level and message count |
 
-## Шаг 3. Настройка вебхука в Meta
+## Project Structure
 
-1. В Meta for Developers → WhatsApp → **Configuration**
-2. Webhook URL: `https://your-app-name.koyeb.app/webhook`
-3. Verify Token: то же самое значение, что в `WHATSAPP_VERIFY_TOKEN`
-4. Нажми **Verify and Save** — если всё верно, Meta пришлёт GET-запрос, твой сервер ответит, и Meta покажет "✓ Verified"
-5. В разделе **Webhook fields** подпишись на `messages`
-
-## Шаг 4. Проверка
-
-Напиши "hello" с твоего личного WhatsApp на тестовый номер. Бот должен ответить тем же текстом "hello".
-
-Если не работает — смотри логи в Koyeb (Service → Logs), там будет видно входящий payload и любые ошибки.
-
-## Локальная разработка (опционально)
-
-```bash
-pip install -r requirements.txt
-cp .env.example .env  # и заполни реальными значениями
-uvicorn app.main:app --reload
+```
+app/
+├── main.py                  # FastAPI app, lifespan (DB init + content seeding)
+├── config.py                # Settings from environment variables
+├── db/
+│   ├── database.py          # Async PostgreSQL connection (asyncpg)
+│   └── models.py            # SQLAlchemy models: User, Message, ContentItem
+├── routers/
+│   └── webhook.py           # WhatsApp webhook: verification + message handling
+└── services/
+    ├── coach.py             # LLM coach logic + system prompt
+    ├── memory.py            # Conversation history (read/write PostgreSQL)
+    ├── user_service.py      # Student profile management
+    ├── content_service.py   # Course catalog queries
+    └── progress_service.py  # Topic detection + level evaluation
+scripts/
+└── seed_content.py          # Initial content catalog data (22 learning materials)
 ```
 
-Для локального теста вебхука с реальным Meta понадобится ngrok (временный публичный URL), но раз мы договорились работать сразу на хостинге (Koyeb) — этот шаг можно пропустить.
+## Environment Variables
 
-## Критерий готовности этапа 0
+```env
+WHATSAPP_TOKEN=             # Meta permanent system user token
+WHATSAPP_PHONE_NUMBER_ID=   # WhatsApp Business phone number ID
+WHATSAPP_VERIFY_TOKEN=      # Webhook verification token (your choice)
+WHATSAPP_API_VERSION=v22.0  # Graph API version
+GROQ_API_KEY=               # Groq API key (console.groq.com)
+DATABASE_URL=               # PostgreSQL connection string (auto-set by Railway)
+```
 
-✅ Сообщение в WhatsApp → бот отвечает тем же текстом.
+## Setup & Deployment
 
-Когда это работает — переходим к Этапу 1 (подключение LLM, чтобы бот отвечал как языковой коуч, а не эхом).
+### 1. Meta for Developers
+- Create a Meta App → add WhatsApp product
+- Get `Phone Number ID` and generate a permanent token via System User
+- Configure webhook URL: `https://your-app.up.railway.app/webhook`
+- Subscribe to `messages` field
+
+### 2. Railway
+- Create new project → Deploy from GitHub
+- Add PostgreSQL database → connect `DATABASE_URL` via reference variable
+- Set all environment variables
+- Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+
+### 3. First Run
+On startup, the app automatically:
+1. Creates database tables (`users`, `messages`, `content_items`)
+2. Seeds the content catalog with 22 learning materials
+
+## Privacy Policy
+
+Available at: https://rmekenov-pixel.github.io/language-coach-bot/privacy-policy.html
+
+## Author
+
+Ratmir Mekenov — [LinkedIn](https://linkedin.com/in/mekenovratmir) | [GitHub](https://github.com/rmekenov-pixel)
